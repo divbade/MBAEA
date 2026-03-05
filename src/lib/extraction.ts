@@ -1,9 +1,9 @@
 import OpenAI from "openai";
 import { ExtractedCommitmentSchema, type ExtractedCommitmentInput } from "@/lib/schemas/extraction";
 
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
+function getOpenAI() {
+    return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+}
 
 const SYSTEM_PROMPT = `You are a structured data extraction assistant for MBA students. Your job is to parse unstructured text (emails, messages, notes, etc.) and extract commitment/task information into precise JSON.
 
@@ -141,7 +141,7 @@ export async function extractCommitment(
 
     // Attempt 1: LLM extraction
     try {
-        const response = await openai.chat.completions.create({
+        const response = await getOpenAI().chat.completions.create({
             model: "gpt-4o-mini",
             messages: [
                 { role: "system", content: SYSTEM_PROMPT },
@@ -162,7 +162,7 @@ export async function extractCommitment(
         // Attempt 2: Repair prompt
         try {
             const errorMessage = firstError instanceof Error ? firstError.message : "Unknown validation error";
-            const response = await openai.chat.completions.create({
+            const response = await getOpenAI().chat.completions.create({
                 model: "gpt-4o-mini",
                 messages: [
                     { role: "system", content: SYSTEM_PROMPT },
