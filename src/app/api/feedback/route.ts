@@ -31,6 +31,9 @@ export async function POST(request: Request) {
         });
 
         // Update goal weights based on feedback
+        let message = thumbs === 1 ? "Noted — glad that worked!" : "Got it — will adjust.";
+        let updatedWeights = null;
+
         if (goal_tags && goal_tags.length > 0) {
             const { data: prefs } = await supabase
                 .from("preferences")
@@ -41,12 +44,13 @@ export async function POST(request: Request) {
             if (prefs) {
                 const weights = { ...prefs.goal_weights };
                 const delta = thumbs === 1 ? 0.1 : -0.1;
+                const changedTags: string[] = [];
 
                 for (const tag of goal_tags) {
                     if (tag in weights) {
                         weights[tag] = Math.max(0, Math.min(5, weights[tag] + delta));
-                        // Round to 1 decimal
                         weights[tag] = Math.round(weights[tag] * 10) / 10;
+                        changedTags.push(tag);
                     }
                 }
 
@@ -54,10 +58,18 @@ export async function POST(request: Request) {
                     .from("preferences")
                     .update({ goal_weights: weights })
                     .eq("user_id", user.id);
+
+                updatedWeights = weights;
+                const action = thumbs === 1 ? "Boosting" : "Reducing";
+                message = `${action} ${changedTags.join(", ")} priority`;
             }
         }
 
-        return NextResponse.json({ success: true });
+        return NextResponse.json({
+            success: true,
+            message,
+            updated_weights: updatedWeights,
+        });
     } catch (err) {
         console.error("Feedback error:", err);
         return NextResponse.json({ error: "Internal server error" }, { status: 500 });

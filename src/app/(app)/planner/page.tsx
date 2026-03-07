@@ -32,6 +32,7 @@ export default function PlannerPage() {
     const [selectedBlock, setSelectedBlock] = useState<PlanBlock | null>(null);
     const [feedback, setFeedback] = useState<Record<number, number>>({});
     const [demoMode, setDemoMode] = useState(true);
+    const [toast, setToast] = useState<{ message: string; type: "up" | "down" } | null>(null);
 
     // Load the latest saved plan on mount
     useEffect(() => {
@@ -82,7 +83,7 @@ export default function PlannerPage() {
         setFeedback((prev) => ({ ...prev, [blockIndex]: thumbs }));
 
         try {
-            await fetch("/api/feedback", {
+            const res = await fetch("/api/feedback", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -92,6 +93,12 @@ export default function PlannerPage() {
                     goal_tags: plan?.[blockIndex]?.goal_tags || [],
                 }),
             });
+
+            if (res.ok) {
+                const data = await res.json();
+                setToast({ message: data.message, type: thumbs === 1 ? "up" : "down" });
+                setTimeout(() => setToast(null), 3000);
+            }
         } catch (err) {
             console.error("Feedback error:", err);
         }
@@ -295,6 +302,16 @@ export default function PlannerPage() {
                             </div>
                         ))}
                     </div>
+                </div>
+            )}
+
+            {/* Feedback toast */}
+            {toast && (
+                <div className={`fixed bottom-6 right-6 px-4 py-3 rounded-xl text-sm font-medium shadow-lg animate-fade-in z-50 flex items-center gap-2 ${toast.type === "up"
+                        ? "bg-success/20 text-success border border-success/30"
+                        : "bg-warning/20 text-warning border border-warning/30"
+                    }`} style={{ backdropFilter: 'blur(12px)' }}>
+                    {toast.type === "up" ? "👍" : "👎"} {toast.message}
                 </div>
             )}
         </div>

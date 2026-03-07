@@ -7,7 +7,7 @@ import {
     PenSquare,
     CalendarDays,
     Settings,
-    Sun,
+    BarChart3,
     Sparkles,
     LogOut,
 } from "lucide-react";
@@ -18,7 +18,7 @@ const navItems = [
     { href: "/capture", label: "Capture", icon: PenSquare },
     { href: "/inbox", label: "Inbox", icon: Inbox },
     { href: "/planner", label: "Planner", icon: CalendarDays },
-    { href: "/brief", label: "Daily Brief", icon: Sun },
+    { href: "/recap", label: "Recap", icon: BarChart3 },
     { href: "/settings", label: "Settings", icon: Settings },
 ];
 

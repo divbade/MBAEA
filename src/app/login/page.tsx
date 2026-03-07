@@ -110,7 +110,8 @@ export default function LoginPage() {
                             placeholder="Email address"
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
-                            className="input-field pl-11"
+                            className="input-field"
+                            style={{ paddingLeft: '2.75rem' }}
                             required
                         />
                     </div>
@@ -122,7 +123,8 @@ export default function LoginPage() {
                             placeholder="Password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
-                            className="input-field pl-11"
+                            className="input-field"
+                            style={{ paddingLeft: '2.75rem' }}
                             required
                             minLength={6}
                         />
