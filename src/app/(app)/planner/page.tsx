@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
     CalendarDays,
     Sparkles,
@@ -28,9 +28,30 @@ export default function PlannerPage() {
     const [plan, setPlan] = useState<PlanBlock[] | null>(null);
     const [warnings, setWarnings] = useState<string[]>([]);
     const [loading, setLoading] = useState(false);
+    const [initialLoading, setInitialLoading] = useState(true);
     const [selectedBlock, setSelectedBlock] = useState<PlanBlock | null>(null);
     const [feedback, setFeedback] = useState<Record<number, number>>({});
     const [demoMode, setDemoMode] = useState(true);
+
+    // Load the latest saved plan on mount
+    useEffect(() => {
+        const loadSavedPlan = async () => {
+            try {
+                const res = await fetch("/api/planner");
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.plan?.plan_json) {
+                        setPlan(data.plan.plan_json);
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to load saved plan:", err);
+            } finally {
+                setInitialLoading(false);
+            }
+        };
+        loadSavedPlan();
+    }, []);
 
     const generatePlan = async () => {
         setLoading(true);
@@ -140,15 +161,22 @@ export default function PlannerPage() {
             )}
 
             {!plan ? (
-                <div className="glass-card p-12 text-center">
-                    <CalendarDays size={40} className="text-foreground-muted mx-auto mb-4 opacity-30" />
-                    <p className="text-foreground-muted mb-2">No plan generated yet.</p>
-                    <p className="text-foreground-muted text-sm">
-                        Accept some items in your{" "}
-                        <a href="/inbox" className="text-accent hover:underline">Inbox</a>{" "}
-                        first, then click Generate Plan.
-                    </p>
-                </div>
+                initialLoading ? (
+                    <div className="glass-card p-12 text-center">
+                        <Loader2 size={40} className="text-foreground-muted mx-auto mb-4 animate-spin opacity-30" />
+                        <p className="text-foreground-muted text-sm">Loading your plan...</p>
+                    </div>
+                ) : (
+                    <div className="glass-card p-12 text-center">
+                        <CalendarDays size={40} className="text-foreground-muted mx-auto mb-4 opacity-30" />
+                        <p className="text-foreground-muted mb-2">No plan generated yet.</p>
+                        <p className="text-foreground-muted text-sm">
+                            Accept some items in your{" "}
+                            <a href="/inbox" className="text-accent hover:underline">Inbox</a>{" "}
+                            first, then click Generate Plan.
+                        </p>
+                    </div>
+                )
             ) : (
                 <div className="grid gap-4">
                     {DAYS.map((day, dayIndex) => {
@@ -214,8 +242,8 @@ export default function PlannerPage() {
                                                                 <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                                                                     <button
                                                                         className={`p-1.5 rounded-lg transition-all ${feedback[globalIdx] === 1
-                                                                                ? "bg-success/20 text-success"
-                                                                                : "text-foreground-muted hover:text-success hover:bg-success/10"
+                                                                            ? "bg-success/20 text-success"
+                                                                            : "text-foreground-muted hover:text-success hover:bg-success/10"
                                                                             }`}
                                                                         onClick={() => handleFeedback(globalIdx, 1)}
                                                                     >
@@ -223,8 +251,8 @@ export default function PlannerPage() {
                                                                     </button>
                                                                     <button
                                                                         className={`p-1.5 rounded-lg transition-all ${feedback[globalIdx] === -1
-                                                                                ? "bg-danger/20 text-danger"
-                                                                                : "text-foreground-muted hover:text-danger hover:bg-danger/10"
+                                                                            ? "bg-danger/20 text-danger"
+                                                                            : "text-foreground-muted hover:text-danger hover:bg-danger/10"
                                                                             }`}
                                                                         onClick={() => handleFeedback(globalIdx, -1)}
                                                                     >
