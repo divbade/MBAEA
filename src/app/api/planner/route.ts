@@ -87,21 +87,23 @@ export async function POST(request: Request) {
         });
 
         // 5. Save default plan (A) to DB
-        const { error: saveError } = await supabase
+        const { data: savedPlan, error: saveError } = await supabase
             .from("weekly_plans")
             .insert({
                 user_id: user.id,
                 week_start: weekStart.toISOString().split("T")[0],
                 plan_json: planA.blocks,
                 status: "draft",
-            });
+            })
+            .select()
+            .single();
 
         if (saveError) {
             console.error("Save plan error:", saveError);
         }
 
         return NextResponse.json({
-            plan: { plan_json: planA.blocks },
+            plan: savedPlan || { plan_json: planA.blocks },
             options: {
                 A: planA.blocks,
                 B: planB.blocks
@@ -110,6 +112,41 @@ export async function POST(request: Request) {
         });
     } catch (err) {
         console.error("Planner API error:", err);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    }
+}
+
+export async function PATCH(request: Request) {
+    try {
+        const supabase = await createClient();
+        const {
+            data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!user) {
+            return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+
+        const { id, plan_json } = await request.json();
+
+        if (!id || !plan_json) {
+            return NextResponse.json({ error: "Missing ID or plan_json" }, { status: 400 });
+        }
+
+        const { error } = await supabase
+            .from("weekly_plans")
+            .update({ plan_json, status: "draft" })
+            .eq("id", id)
+            .eq("user_id", user.id);
+
+        if (error) {
+            console.error("Update plan error:", error);
+            return NextResponse.json({ error: "Failed to update plan" }, { status: 500 });
+        }
+
+        return NextResponse.json({ message: "Plan updated successfully" });
+    } catch (err) {
+        console.error("PATCH error:", err);
         return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }

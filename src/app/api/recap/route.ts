@@ -52,6 +52,9 @@ export async function GET() {
         const now = new Date();
         const zonedNow = toZonedTime(now, userTimezone);
 
+        console.log(`[Recap] Processing for ${user.id} at ${zonedNow.toISOString()} (${userTimezone})`);
+        console.log(`[Recap] Total blocks in plan: ${blocks.length}`);
+
         // 3. Filter blocks for "today" in user's timezone
         const todayBlocks = blocks.filter((b) => {
             try {
@@ -62,6 +65,8 @@ export async function GET() {
                 return false;
             }
         });
+
+        console.log(`[Recap] Blocks found for today: ${todayBlocks.length}`);
 
         // 4. Calculate alignment and time metrics
         const goalMinutes: Record<string, number> = {};
@@ -87,18 +92,17 @@ export async function GET() {
         // Calculate alignment score based on deviation from desired allocation
         const totalWeight = Object.values(goalWeights).reduce((a, b) => a + b, 0);
         const alignmentScore = (() => {
-            if (totalMinutesToday === 0) return 0;
+            if (totalMinutesToday === 0) return 100; // Neutral if no data yet
             
             let deviation = 0;
             const tags = Object.keys(goalWeights);
             
             for (const tag of tags) {
-                const desired = (goalWeights[tag as keyof GoalWeights] || 0) / totalWeight;
+                const desired = (goalWeights[tag as keyof GoalWeights] || 0) / (totalWeight || 1);
                 const actual = (goalMinutes[tag] || 0) / totalMinutesToday;
                 deviation += Math.abs(desired - actual);
             }
             
-            // Score from 0 to 100
             return Math.round(Math.max(0, (1 - (deviation / 2)) * 100));
         })();
 
@@ -116,9 +120,9 @@ Today is ${format(zonedNow, "EEEE, MMMM d")}.
 Zone: ${userTimezone}
 
 Priorities: ${Object.entries(goalWeights).map(([k, v]) => `${k}: ${v}`).join(", ")}
-Today's blocks: ${todayBlocks.map(b => `${b.title} (${Math.round((parseISO(b.end).getTime() - parseISO(b.start).getTime())/(1000*60))}m)`).join(", ")}
-Time per goal: ${Object.entries(goalMinutes).map(([k, v]) => `${k}: ${Math.round(v)}m`).join(", ")}
+Today's blocks: ${todayBlocks.length > 0 ? todayBlocks.map(b => b.title).join(", ") : "None yet"}
 Alignment: ${alignmentScore}%
+Feedback Given: ${feedbackCount || 0}
 `;
 
             const response = await getOpenAI().chat.completions.create({
@@ -126,7 +130,7 @@ Alignment: ${alignmentScore}%
                 messages: [
                     {
                         role: "system",
-                        content: `You are an MBA assistant. Provide 3 brief, actionable recs for tomorrow based on today's alignment. JSON format: {"recommendations": ["...", "...", "..."]}`,
+                        content: `You are an MBA assistant. Provide 3 brief, actionable recommendations for tomorrow. If today was empty, encourage them to schedule their top priorities. JSON format: {"recommendations": ["...", "...", "..."]}`,
                     },
                     { role: "user", content: recapContext },
                 ],
@@ -140,26 +144,29 @@ Alignment: ${alignmentScore}%
         } catch (err) {
             console.error("AI Recommendation error:", err);
             recommendations = [
-                "Great work today! Try to block more time for recruiting tomorrow.",
-                "Give feedback on your schedule to improve future recommendations.",
-                "Review your goal weights if your focus areas have shifted."
+                "Review your priorities for the coming days.",
+                "Give feedback on your schedule to help the system learn.",
+                "Check your inbox for new commitments to add to your plan."
             ];
         }
 
         // 7. Calculate week-to-date stats
         const weekGoalMinutes: Record<string, number> = {};
-        const startOfThisWeekUTC = startOfWeek(zonedNow, { weekStartsOn: 1 }); // Actually need to calculate based on zoned time
         
         blocks.forEach(block => {
-            const bStart = parseISO(block.start);
-            const bStartLocal = toZonedTime(bStart, userTimezone);
-            
-            // If block is in the past week up to end of today
-            if (isBefore(bStartLocal, addDays(zonedNow, 1))) {
-                const mins = (parseISO(block.end).getTime() - bStart.getTime()) / (1000 * 60);
-                (block.goal_tags || ["untagged"]).forEach(tag => {
-                    weekGoalMinutes[tag] = (weekGoalMinutes[tag] || 0) + (mins / (block.goal_tags?.length || 1));
-                });
+            try {
+                const bStart = parseISO(block.start);
+                const bStartLocal = toZonedTime(bStart, userTimezone);
+                
+                if (isBefore(bStartLocal, addDays(zonedNow, 1))) {
+                    const mins = (parseISO(block.end).getTime() - bStart.getTime()) / (1000 * 60);
+                    const tags = block.goal_tags || ["untagged"];
+                    tags.forEach(tag => {
+                        weekGoalMinutes[tag] = (weekGoalMinutes[tag] || 0) + (mins / tags.length);
+                    });
+                }
+            } catch (e) {
+                // Ignore invalid blocks
             }
         });
 
@@ -180,7 +187,7 @@ Alignment: ${alignmentScore}%
             feedback_count: feedbackCount || 0,
         });
     } catch (err) {
-        console.error("Recap error:", err);
-        return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+        console.error("Recap API level error:", err);
+        return NextResponse.json({ error: "Internal server error", details: err instanceof Error ? err.message : String(err) }, { status: 500 });
     }
 }

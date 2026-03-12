@@ -30,6 +30,7 @@ export default function PlannerPage() {
     const [demoMode, setDemoMode] = useState(true);
     const [toast, setToast] = useState<{ message: string; type: "up" | "down" | "info" } | null>(null);
     const [selectedOption, setSelectedOption] = useState<"A" | "B" | null>(null);
+    const [planId, setPlanId] = useState<string | null>(null);
 
     // Load the latest saved plan on mount
     useEffect(() => {
@@ -40,6 +41,7 @@ export default function PlannerPage() {
                     const data = await res.json();
                     if (data.plan?.plan_json) {
                         setPlan(data.plan.plan_json);
+                        setPlanId(data.plan.id);
                     }
                 }
             } catch (err) {
@@ -71,8 +73,10 @@ export default function PlannerPage() {
             const data = await res.json();
             if (data.options) {
                 setOptions(data.options);
+                if (data.plan?.id) setPlanId(data.plan.id);
             } else if (data.plan?.plan_json) {
                 setPlan(data.plan.plan_json);
+                if (data.plan.id) setPlanId(data.plan.id);
             }
             setWarnings(data.warnings || []);
         } catch (err) {
@@ -112,6 +116,19 @@ export default function PlannerPage() {
             }
         } catch (err) {
             console.error("Feedback error:", err);
+        }
+
+        // Also update the plan in the database to persist this choice
+        if (planId) {
+            try {
+                await fetch("/api/planner", {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ id: planId, plan_json: winner }),
+                });
+            } catch (err) {
+                console.error("Failed to persist selection:", err);
+            }
         }
     };
 
