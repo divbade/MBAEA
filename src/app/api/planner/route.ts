@@ -5,12 +5,23 @@ import { startOfWeek } from "date-fns";
 import type { Commitment, Preferences, CalendarEvent } from "@/lib/types";
 
 const DEFAULT_PREFERENCES: Preferences = {
+    id: "default-pref",
+    user_id: "default-user",
     work_start: "08:00",
     work_end: "18:00",
     max_commitments_per_day: 5,
     focus_block_mins: 90,
     timezone: "UTC",
-    goal_weights: {},
+    goal_weights: {
+        recruiting: 3,
+        academics: 3,
+        health: 2,
+        relationships: 2,
+        clubs: 1,
+        admin: 1
+    },
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
 };
 
 export async function POST(request: Request) {
@@ -77,12 +88,12 @@ export async function POST(request: Request) {
 
         // 5. Save default plan (A) to DB
         const { error: saveError } = await supabase
-            .from("plans")
+            .from("weekly_plans")
             .insert({
                 user_id: user.id,
                 week_start: weekStart.toISOString().split("T")[0],
                 plan_json: planA.blocks,
-                status: "DRAFT",
+                status: "draft",
             });
 
         if (saveError) {
@@ -115,7 +126,7 @@ export async function GET() {
         }
 
         const { data: plan } = await supabase
-            .from("plans")
+            .from("weekly_plans")
             .select("*")
             .eq("user_id", user.id)
             .order("created_at", { ascending: false })
