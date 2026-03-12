@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { format, parseISO, isSameDay, isBefore, addDays } from "date-fns";
+import { startOfWeek, format, parseISO, isSameDay, isBefore, addDays } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
 import OpenAI from "openai";
 import type { PlanBlock, GoalWeights } from "@/lib/types";
