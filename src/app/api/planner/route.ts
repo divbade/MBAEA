@@ -93,7 +93,7 @@ export async function POST(request: Request) {
                 user_id: user.id,
                 week_start: weekStart.toISOString().split("T")[0],
                 plan_json: planA.blocks,
-                status: "draft",
+                status: "DRAFT",
             })
             .select()
             .single();
@@ -135,7 +135,7 @@ export async function PATCH(request: Request) {
 
         const { error } = await supabase
             .from("plans")
-            .update({ plan_json, status: "draft" })
+            .update({ plan_json, status: "DRAFT" })
             .eq("id", id)
             .eq("user_id", user.id);
 
