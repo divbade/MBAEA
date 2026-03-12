@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { startOfWeek, format, parseISO, isToday, isBefore, addDays } from "date-fns";
+import { format, parseISO, isSameDay, isBefore, addDays } from "date-fns";
+import { toZonedTime } from "date-fns-tz";
 import OpenAI from "openai";
 import type { PlanBlock, GoalWeights } from "@/lib/types";
 
@@ -19,9 +20,9 @@ export async function GET() {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        // Get latest plan
+        // 1. Get latest plan from weekly_plans (matching Planner API)
         const { data: plan } = await supabase
-            .from("plans")
+            .from("weekly_plans")
             .select("*")
             .eq("user_id", user.id)
             .order("created_at", { ascending: false })
@@ -35,30 +36,34 @@ export async function GET() {
             });
         }
 
-        // Get preferences
+        // 2. Get preferences for timezone and goal weights
         const { data: prefs } = await supabase
             .from("preferences")
             .select("*")
             .eq("user_id", user.id)
             .single();
 
+        const userTimezone = prefs?.timezone || "UTC";
         const goalWeights: GoalWeights = prefs?.goal_weights || {
             recruiting: 3, academics: 3, health: 2, relationships: 2, clubs: 1, admin: 1,
         };
 
         const blocks = plan.plan_json as PlanBlock[];
-        const today = new Date();
+        const now = new Date();
+        const zonedNow = toZonedTime(now, userTimezone);
 
-        // Get today's blocks
+        // 3. Filter blocks for "today" in user's timezone
         const todayBlocks = blocks.filter((b) => {
             try {
-                return isToday(parseISO(b.start));
+                const blockStartUTC = parseISO(b.start);
+                const blockStartLocal = toZonedTime(blockStartUTC, userTimezone);
+                return isSameDay(blockStartLocal, zonedNow);
             } catch {
                 return false;
             }
         });
 
-        // Calculate time spent per goal tag today
+        // 4. Calculate alignment and time metrics
         const goalMinutes: Record<string, number> = {};
         let totalMinutesToday = 0;
 
@@ -79,58 +84,41 @@ export async function GET() {
             }
         }
 
-        // Calculate alignment score
+        // Calculate alignment score based on deviation from desired allocation
         const totalWeight = Object.values(goalWeights).reduce((a, b) => a + b, 0);
-        const desiredAllocation: Record<string, number> = {};
-        for (const [tag, weight] of Object.entries(goalWeights)) {
-            desiredAllocation[tag] = totalWeight > 0 ? weight / totalWeight : 0;
-        }
+        const alignmentScore = (() => {
+            if (totalMinutesToday === 0) return 0;
+            
+            let deviation = 0;
+            const tags = Object.keys(goalWeights);
+            
+            for (const tag of tags) {
+                const desired = (goalWeights[tag as keyof GoalWeights] || 0) / totalWeight;
+                const actual = (goalMinutes[tag] || 0) / totalMinutesToday;
+                deviation += Math.abs(desired - actual);
+            }
+            
+            // Score from 0 to 100
+            return Math.round(Math.max(0, (1 - (deviation / 2)) * 100));
+        })();
 
-        const actualAllocation: Record<string, number> = {};
-        for (const [tag, mins] of Object.entries(goalMinutes)) {
-            actualAllocation[tag] = totalMinutesToday > 0 ? mins / totalMinutesToday : 0;
-        }
-
-        // Alignment = 1 - average absolute deviation
-        let totalDeviation = 0;
-        let tagCount = 0;
-        for (const tag of Object.keys(goalWeights)) {
-            const desired = desiredAllocation[tag] || 0;
-            const actual = actualAllocation[tag] || 0;
-            totalDeviation += Math.abs(desired - actual);
-            tagCount++;
-        }
-        const alignmentScore = Math.max(0, Math.min(100,
-            Math.round((1 - (tagCount > 0 ? totalDeviation / tagCount : 0)) * 100)
-        ));
-
-        // Get recent feedback count
+        // 5. Get feedback count
         const { count: feedbackCount } = await supabase
             .from("feedback")
             .select("*", { count: "exact", head: true })
             .eq("user_id", user.id);
 
-        // Generate recommendations with LLM
+        // 6. Generate AI recommendations
         let recommendations: string[] = [];
         try {
             const recapContext = `
-Today is ${format(today, "EEEE, MMMM d, yyyy")}.
+Today is ${format(zonedNow, "EEEE, MMMM d")}.
+Zone: ${userTimezone}
 
-User's goal priorities (weight 0-5):
-${Object.entries(goalWeights).map(([k, v]) => `- ${k}: ${v}`).join("\n")}
-
-Today's scheduled blocks:
-${todayBlocks.length === 0 ? "No blocks scheduled today." :
-                    todayBlocks.map((b) =>
-                        `- ${format(parseISO(b.start), "h:mm a")}-${format(parseISO(b.end), "h:mm a")}: ${b.title} [${b.goal_tags?.join(", ") || "no tags"}]`
-                    ).join("\n")}
-
-Time spent per goal:
-${Object.entries(goalMinutes).map(([k, v]) => `- ${k}: ${Math.round(v)} min`).join("\n") || "No time tracked yet."}
-
-Total scheduled time today: ${Math.round(totalMinutesToday)} min
-Alignment score: ${alignmentScore}%
-Total feedback given: ${feedbackCount || 0}
+Priorities: ${Object.entries(goalWeights).map(([k, v]) => `${k}: ${v}`).join(", ")}
+Today's blocks: ${todayBlocks.map(b => `${b.title} (${Math.round((parseISO(b.end).getTime() - parseISO(b.start).getTime())/(1000*60))}m)`).join(", ")}
+Time per goal: ${Object.entries(goalMinutes).map(([k, v]) => `${k}: ${Math.round(v)}m`).join(", ")}
+Alignment: ${alignmentScore}%
 `;
 
             const response = await getOpenAI().chat.completions.create({
@@ -138,61 +126,47 @@ Total feedback given: ${feedbackCount || 0}
                 messages: [
                     {
                         role: "system",
-                        content: `You are an MBA executive assistant providing a brief daily recap. Give exactly 3 short, specific, actionable recommendations based on the user's day and goal priorities. Each should be 1 sentence. Focus on what they should do TOMORROW.
-
-Format: Return ONLY a JSON object: {"recommendations": ["rec1", "rec2", "rec3"]}`,
+                        content: `You are an MBA assistant. Provide 3 brief, actionable recs for tomorrow based on today's alignment. JSON format: {"recommendations": ["...", "...", "..."]}`,
                     },
                     { role: "user", content: recapContext },
                 ],
-                temperature: 0.4,
-                max_tokens: 300,
                 response_format: { type: "json_object" },
             });
 
             const content = response.choices[0]?.message?.content;
             if (content) {
-                const parsed = JSON.parse(content);
-                recommendations = parsed.recommendations || [];
+                recommendations = JSON.parse(content).recommendations || [];
             }
         } catch (err) {
-            console.error("Recap recommendation error:", err);
+            console.error("AI Recommendation error:", err);
             recommendations = [
-                "Review your goal weights to ensure they match your current priorities.",
-                "Consider adding more blocks aligned with your top goals.",
-                "Give feedback on plan blocks to help the system learn your preferences.",
+                "Great work today! Try to block more time for recruiting tomorrow.",
+                "Give feedback on your schedule to improve future recommendations.",
+                "Review your goal weights if your focus areas have shifted."
             ];
         }
 
-        // Week summary
-        const weekBlocks = blocks.filter((b) => {
-            try {
-                const d = parseISO(b.start);
-                return isBefore(d, addDays(today, 1));
-            } catch {
-                return false;
+        // 7. Calculate week-to-date stats
+        const weekGoalMinutes: Record<string, number> = {};
+        const startOfThisWeekUTC = startOfWeek(zonedNow, { weekStartsOn: 1 }); // Actually need to calculate based on zoned time
+        
+        blocks.forEach(block => {
+            const bStart = parseISO(block.start);
+            const bStartLocal = toZonedTime(bStart, userTimezone);
+            
+            // If block is in the past week up to end of today
+            if (isBefore(bStartLocal, addDays(zonedNow, 1))) {
+                const mins = (parseISO(block.end).getTime() - bStart.getTime()) / (1000 * 60);
+                (block.goal_tags || ["untagged"]).forEach(tag => {
+                    weekGoalMinutes[tag] = (weekGoalMinutes[tag] || 0) + (mins / (block.goal_tags?.length || 1));
+                });
             }
         });
-
-        const weekGoalMinutes: Record<string, number> = {};
-        for (const block of weekBlocks) {
-            const start = parseISO(block.start);
-            const end = parseISO(block.end);
-            const mins = (end.getTime() - start.getTime()) / (1000 * 60);
-            const tags = block.goal_tags || [];
-            if (tags.length === 0) {
-                weekGoalMinutes["untagged"] = (weekGoalMinutes["untagged"] || 0) + mins;
-            } else {
-                const perTag = mins / tags.length;
-                for (const tag of tags) {
-                    weekGoalMinutes[tag] = (weekGoalMinutes[tag] || 0) + perTag;
-                }
-            }
-        }
 
         return NextResponse.json({
             has_plan: true,
             today: {
-                date: format(today, "EEEE, MMMM d"),
+                date: format(zonedNow, "EEEE, MMMM d"),
                 blocks: todayBlocks,
                 goal_minutes: goalMinutes,
                 total_minutes: Math.round(totalMinutesToday),
