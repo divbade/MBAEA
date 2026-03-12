@@ -4,6 +4,15 @@ import { generatePlan, generateDemoCalendarEvents } from "@/lib/planner";
 import { startOfWeek } from "date-fns";
 import type { Commitment, Preferences, CalendarEvent } from "@/lib/types";
 
+const DEFAULT_PREFERENCES: Preferences = {
+    work_start: "08:00",
+    work_end: "18:00",
+    max_commitments_per_day: 5,
+    focus_block_mins: 90,
+    timezone: "UTC",
+    goal_weights: {},
+};
+
 export async function POST(request: Request) {
     try {
         const supabase = await createClient();
@@ -49,45 +58,48 @@ export async function POST(request: Request) {
             calendarEvents = [];
         }
 
-        // Generate plan
-        const { blocks, warnings } = generatePlan({
+        // 4. Generate the plan twice (Variation A and B)
+        const planA = generatePlan({
             fixedEvents: calendarEvents,
             commitments: (commitments || []) as Commitment[],
-            preferences: preferences as Preferences,
+            preferences: preferences as Preferences || DEFAULT_PREFERENCES,
             weekStart,
+            variation: "A"
         });
 
-        // Save plan to DB
-        const { data: plan, error: saveError } = await supabase
-            .from("plans")
+        const planB = generatePlan({
+            fixedEvents: calendarEvents,
+            commitments: (commitments || []) as Commitment[],
+            preferences: preferences as Preferences || DEFAULT_PREFERENCES,
+            weekStart,
+            variation: "B"
+        });
+
+        // 5. Save default plan (A) to DB
+        const { error: saveError } = await supabase
+            .from("weekly_plans")
             .insert({
                 user_id: user.id,
                 week_start: weekStart.toISOString().split("T")[0],
-                plan_json: blocks,
-                status: "DRAFT",
-            })
-            .select()
-            .single();
+                plan_json: planA.blocks,
+                status: "draft",
+            });
 
         if (saveError) {
-            console.error("Plan save error:", saveError);
-            return NextResponse.json(
-                { error: "Failed to save plan" },
-                { status: 500 }
-            );
+            console.error("Save plan error:", saveError);
         }
 
         return NextResponse.json({
-            plan,
-            warnings,
-            demo_mode: useDemoEvents,
+            plan: { plan_json: planA.blocks },
+            options: {
+                A: planA.blocks,
+                B: planB.blocks
+            },
+            warnings: Array.from(new Set([...planA.warnings, ...planB.warnings])),
         });
     } catch (err) {
-        console.error("Planner error:", err);
-        return NextResponse.json(
-            { error: "Internal server error" },
-            { status: 500 }
-        );
+        console.error("Planner API error:", err);
+        return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
     }
 }
 
@@ -103,7 +115,7 @@ export async function GET() {
         }
 
         const { data: plan } = await supabase
-            .from("plans")
+            .from("weekly_plans")
             .select("*")
             .eq("user_id", user.id)
             .order("created_at", { ascending: false })

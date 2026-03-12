@@ -1,4 +1,5 @@
 import { addDays, addMinutes, format, isAfter, isBefore, parseISO, startOfWeek, setHours, setMinutes } from "date-fns";
+import { toZonedTime, fromZonedTime } from "date-fns-tz";
 import type { Commitment, PlanBlock, Preferences, CalendarEvent } from "@/lib/types";
 
 interface PlannerInput {
@@ -6,6 +7,7 @@ interface PlannerInput {
     commitments: Commitment[];
     preferences: Preferences;
     weekStart: Date;
+    variation?: "A" | "B";
 }
 
 interface TimeSlot {
@@ -23,18 +25,27 @@ function parseWorkTime(time: string): { hours: number; minutes: number } {
 
 /**
  * Get available slots for a given day, excluding occupied blocks.
+ * Timezone aware.
  */
 function getAvailableSlots(
     day: Date,
     workStart: string,
     workEnd: string,
-    occupied: TimeSlot[]
+    occupied: TimeSlot[],
+    timezone: string = "UTC"
 ): TimeSlot[] {
     const start = parseWorkTime(workStart);
     const end = parseWorkTime(workEnd);
 
-    const dayStart = setMinutes(setHours(day, start.hours), start.minutes);
-    const dayEnd = setMinutes(setHours(day, end.hours), end.minutes);
+    // Convert day to the user's timezone to calculate work boundaries
+    const zonedDay = toZonedTime(day, timezone);
+    
+    const dayStartLocal = setMinutes(setHours(zonedDay, start.hours), start.minutes);
+    const dayEndLocal = setMinutes(setHours(zonedDay, end.hours), end.minutes);
+
+    // Convert back to UTC dates for internal calculation
+    const dayStart = fromZonedTime(dayStartLocal, timezone);
+    const dayEnd = fromZonedTime(dayEndLocal, timezone);
 
     // Sort occupied by start time
     const sortedOccupied = [...occupied]
@@ -82,23 +93,17 @@ function findSlot(
 }
 
 /**
- * Deterministic planning engine.
- * 
- * Algorithm:
- * 1. Place fixed events as immovable blocks
- * 2. Sort flexible commitments by urgency then rank
- * 3. Schedule due-soon tasks into earliest available slots
- * 4. Add focus blocks in morning windows
- * 5. Validate no overlaps and work hour constraints
+ * Deterministic planning engine with variation support.
  */
 export function generatePlan(input: PlannerInput): {
     blocks: PlanBlock[];
     warnings: string[];
 } {
-    const { fixedEvents, commitments, preferences, weekStart } = input;
+    const { fixedEvents, commitments, preferences, weekStart, variation = "A" } = input;
     const blocks: PlanBlock[] = [];
     const warnings: string[] = [];
     const monday = startOfWeek(weekStart, { weekStartsOn: 1 });
+    const userTimezone = preferences.timezone || "UTC";
 
     // Track occupied slots per day (day index 0-6 = Mon-Sun)
     const occupiedByDay: Map<number, TimeSlot[]> = new Map();
@@ -140,7 +145,7 @@ export function generatePlan(input: PlannerInput): {
         }
     }
 
-    // Step 2: Sort commitments by priority
+    // Step 2: Sort commitments by priority (with variation)
     const now = new Date();
     const sortedCommitments = [...commitments].sort((a, b) => {
         // Due-soon items first
@@ -148,10 +153,11 @@ export function generatePlan(input: PlannerInput): {
         const bDue = b.due_at ? parseISO(b.due_at).getTime() : Infinity;
         if (aDue !== bDue) return aDue - bDue;
 
-        // Then by start time
-        const aStart = a.start_at ? parseISO(a.start_at).getTime() : Infinity;
-        const bStart = b.start_at ? parseISO(b.start_at).getTime() : Infinity;
-        return aStart - bStart;
+        // Variation A prefers original order, B reverses equal-priority items
+        if (variation === "B") {
+            return b.title.localeCompare(a.title);
+        }
+        return a.title.localeCompare(b.title);
     });
 
     // Track commitments per day for overload check
@@ -201,7 +207,8 @@ export function generatePlan(input: PlannerInput): {
                         addDays(monday, dayIndex),
                         preferences.work_start,
                         preferences.work_end,
-                        occupied
+                        occupied,
+                        userTimezone
                     );
 
                     // Check if prep slot is available
@@ -236,6 +243,8 @@ export function generatePlan(input: PlannerInput): {
             ? `Due ${format(dueDateObj, "EEEE, MMM d")}.`
             : "";
 
+        // Variation: Option B tries to schedule from the end of the day or week? 
+        // Let's keep it simple: Variation B just changes sort order.
         for (let d = 0; d < 7; d++) {
             if (scheduled) break;
 
@@ -260,7 +269,8 @@ export function generatePlan(input: PlannerInput): {
                 dayDate,
                 preferences.work_start,
                 preferences.work_end,
-                occupied
+                occupied,
+                userTimezone
             );
 
             const slot = findSlot(available, duration);
@@ -293,7 +303,7 @@ export function generatePlan(input: PlannerInput): {
     // Step 4: Add focus blocks (2 per day) in morning windows
     const focusDuration = preferences.focus_block_mins;
     const workStartParsed = parseWorkTime(preferences.work_start);
-    const morningEndHour = Math.min(workStartParsed.hours + 4, 12); // Focus in first 4 hours of work
+    const morningEndHour = Math.min(workStartParsed.hours + 4, 18); // Increased range to ensure focus blocks fit
 
     for (let d = 0; d < 5; d++) {
         // Weekdays only
@@ -301,18 +311,24 @@ export function generatePlan(input: PlannerInput): {
         if (isBefore(dayDate, now) && getDayIndex(now) > d) continue;
 
         const occupied = occupiedByDay.get(d) || [];
-        const morningEnd = setMinutes(setHours(dayDate, morningEndHour), 0);
+        
+        // Zoned morning end
+        const zonedDay = toZonedTime(dayDate, userTimezone);
+        const morningEndLocal = setMinutes(setHours(zonedDay, morningEndHour), 0);
+        const morningEnd = fromZonedTime(morningEndLocal, userTimezone);
+
         const morningSlots = getAvailableSlots(
             dayDate,
             preferences.work_start,
-            format(morningEnd, "HH:mm"),
-            occupied
+            format(morningEndLocal, "HH:mm"),
+            occupied,
+            userTimezone
         );
 
         // Try to place up to 2 focus blocks
         let focusCount = 0;
         for (const slot of morningSlots) {
-            if (focusCount >= 2) break;
+            if (focusCount >= (variation === "B" ? 1 : 2)) break; // Variation B has fewer focus blocks to differentiate
             const slotDuration = (slot.end.getTime() - slot.start.getTime()) / (1000 * 60);
             if (slotDuration >= focusDuration) {
                 const focusEnd = addMinutes(slot.start, focusDuration);
@@ -321,7 +337,7 @@ export function generatePlan(input: PlannerInput): {
                     end: focusEnd.toISOString(),
                     title: "Focus Block",
                     block_type: "focus_block",
-                    reasoning: `${focusDuration}-min focus block in morning high-energy window (${format(slot.start, "h:mm a")}–${format(focusEnd, "h:mm a")}). Morning hours are optimal for deep work.`,
+                    reasoning: `${focusDuration}-min focus block in morning window (${format(slot.start, "h:mm a")}–${format(focusEnd, "h:mm a")}). Morning hours are optimal for deep work.`,
                     goal_tags: [],
                 });
                 markOccupied(d, { start: slot.start, end: focusEnd });

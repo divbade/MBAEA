@@ -12,17 +12,44 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const { item_type, ref_id, thumbs, goal_tags } = await request.json();
+        const body = await request.json();
+        const { item_type, ref_id, thumbs, goal_tags, winner_tags, loser_tags } = body;
 
-        if (!["CANDIDATE", "PLAN_BLOCK"].includes(item_type)) {
-            return NextResponse.json({ error: "Invalid item_type" }, { status: 400 });
+        // Get current preferences
+        const { data: prefs, error: prefsError } = await supabase
+            .from("preferences")
+            .select("*")
+            .eq("user_id", user.id)
+            .single();
+
+        if (prefsError || !prefs) {
+            return NextResponse.json({ error: "Preferences not found" }, { status: 404 });
         }
 
-        if (![1, -1].includes(thumbs)) {
-            return NextResponse.json({ error: "thumbs must be 1 or -1" }, { status: 400 });
+        const weights = { ...(prefs.goal_weights || {}) };
+
+        if (item_type === "PLAN_COMPARISON") {
+            // Adjust weights based on winner vs loser tags
+            (winner_tags as string[]).forEach(tag => {
+                weights[tag] = Math.min(2.0, (weights[tag] || 1.0) + 0.1);
+            });
+            (loser_tags as string[]).forEach(tag => {
+                if (!winner_tags.includes(tag)) {
+                    weights[tag] = Math.max(0.1, (weights[tag] || 1.0) - 0.05);
+                }
+            });
+
+            await supabase
+                .from("preferences")
+                .update({ goal_weights: weights })
+                .eq("user_id", user.id);
+
+            return NextResponse.json({
+                message: `✨ Learning! Adjusted priority for ${winner_tags.join(", ")} categories.`,
+            });
         }
 
-        // Store feedback
+        // Store individual feedback
         await supabase.from("feedback").insert({
             user_id: user.id,
             item_type,
@@ -30,48 +57,21 @@ export async function POST(request: Request) {
             thumbs,
         });
 
-        // Update goal weights based on feedback
-        let message = thumbs === 1 ? "Noted — glad that worked!" : "Got it — will adjust.";
-        let updatedWeights = null;
-
         if (goal_tags && goal_tags.length > 0) {
-            const { data: prefs } = await supabase
+            const adjustment = thumbs === 1 ? 0.02 : -0.02;
+            goal_tags.forEach((tag: string) => {
+                weights[tag] = Math.max(0.1, Math.min(2.0, (weights[tag] || 1.0) + adjustment));
+            });
+
+            await supabase
                 .from("preferences")
-                .select("goal_weights")
-                .eq("user_id", user.id)
-                .single();
-
-            if (prefs) {
-                const weights = { ...prefs.goal_weights };
-                const delta = thumbs === 1 ? 0.1 : -0.1;
-                const changedTags: string[] = [];
-
-                for (const tag of goal_tags) {
-                    if (tag in weights) {
-                        weights[tag] = Math.max(0, Math.min(5, weights[tag] + delta));
-                        weights[tag] = Math.round(weights[tag] * 10) / 10;
-                        changedTags.push(tag);
-                    }
-                }
-
-                await supabase
-                    .from("preferences")
-                    .update({ goal_weights: weights })
-                    .eq("user_id", user.id);
-
-                updatedWeights = weights;
-                const action = thumbs === 1 ? "Boosting" : "Reducing";
-                message = `${action} ${changedTags.join(", ")} priority`;
-            }
+                .update({ goal_weights: weights })
+                .eq("user_id", user.id);
         }
 
-        return NextResponse.json({
-            success: true,
-            message,
-            updated_weights: updatedWeights,
-        });
+        return NextResponse.json({ message: "Feedback recorded. The model is learning!" });
     } catch (err) {
         console.error("Feedback error:", err);
-        return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+        return NextResponse.json({ error: "Failed to record feedback" }, { status: 500 });
     }
 }
