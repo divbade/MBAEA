@@ -12,33 +12,38 @@ import {
     Tag,
     Clock,
     Target,
+    Lightbulb,
+    ListTodo,
 } from "lucide-react";
 import type { ExtractedCommitment } from "@/lib/types";
 
 const EXAMPLES = [
     "Coffee chat with McKinsey recruiter Friday 3pm",
     "Strategy case study due next Wednesday",
-    "Reply to professor about RA position by Thursday",
-    "MBA Tech Club board meeting Monday 6pm",
+    "Prepare for consulting interviews by end of March",
+    "I want to improve my networking this quarter",
     "Gym workout Tuesday and Thursday mornings 7am",
 ];
+
+type CaptureResult = {
+    candidates: { id: string; extracted_json: ExtractedCommitment; extraction_method: string }[];
+    input_type: "event" | "goal" | "intent";
+    classification_reasoning: string;
+    count: number;
+};
 
 export default function CapturePage() {
     const router = useRouter();
     const [rawText, setRawText] = useState("");
     const [extracting, setExtracting] = useState(false);
-    const [saving, setSaving] = useState(false);
-    const [extracted, setExtracted] = useState<ExtractedCommitment | null>(null);
-    const [method, setMethod] = useState<string>("");
-    const [saved, setSaved] = useState(false);
+    const [result, setResult] = useState<CaptureResult | null>(null);
     const [error, setError] = useState("");
 
     const handleExtract = async () => {
         if (!rawText.trim()) return;
         setExtracting(true);
-        setExtracted(null);
+        setResult(null);
         setError("");
-        setSaved(false);
 
         try {
             const res = await fetch("/api/capture", {
@@ -53,9 +58,7 @@ export default function CapturePage() {
             }
 
             const data = await res.json();
-            setExtracted(data.candidate.extracted_json);
-            setMethod(data.extraction_method);
-            setSaved(true); // auto-saved to inbox
+            setResult(data);
         } catch (err) {
             setError(err instanceof Error ? err.message : "Something went wrong");
         } finally {
@@ -64,6 +67,76 @@ export default function CapturePage() {
     };
 
     const goalTagClass = (tag: string) => `tag-${tag}`;
+
+    const inputTypeLabel = {
+        event: { icon: <Tag size={14} />, text: "Event", color: "bg-accent/15 text-accent" },
+        goal: { icon: <Lightbulb size={14} />, text: "Goal → Sub-tasks", color: "bg-success/15 text-success" },
+        intent: { icon: <ListTodo size={14} />, text: "Intent → Tasks", color: "bg-warning/15 text-warning" },
+    };
+
+    const renderCommitmentCard = (
+        item: ExtractedCommitment,
+        method: string,
+        index: number,
+        total: number
+    ) => (
+        <div key={index} className="glass-card p-5 animate-fade-in" style={{ animationDelay: `${index * 100}ms` }}>
+            <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-sm">
+                    {total > 1 ? `Task ${index + 1} of ${total}` : "Extracted Commitment"}
+                </h3>
+                <span className={`badge ${method === "llm" || method === "decomposed" ? "bg-success/15 text-success" : method === "llm_repair" ? "bg-warning/15 text-warning" : "bg-foreground-muted/15 text-foreground-muted"}`}>
+                    {method === "decomposed" ? "🎯 Decomposed" : method === "llm" ? "✨ AI" : method === "llm_repair" ? "🔧 Repaired" : "📏 Fallback"}
+                </span>
+            </div>
+
+            <h2 className="text-base font-bold mb-3">{item.title}</h2>
+
+            <div className="space-y-2 mb-3">
+                <div className="flex items-center gap-3 text-sm">
+                    <Tag size={13} className="text-foreground-muted shrink-0" />
+                    <span className="badge bg-accent/15 text-accent text-[10px]">{item.type}</span>
+                    <span className="badge bg-accent/15 text-accent text-[10px]">{item.required_action}</span>
+                </div>
+
+                {(item.start_at || item.due_at) && (
+                    <div className="flex items-center gap-3 text-sm">
+                        <Clock size={13} className="text-foreground-muted shrink-0" />
+                        <span className="text-foreground-muted text-xs">
+                            {item.start_at
+                                ? `Starts: ${new Date(item.start_at).toLocaleString()}`
+                                : `Due: ${new Date(item.due_at!).toLocaleString()}`}
+                        </span>
+                    </div>
+                )}
+
+                {item.duration_mins && (
+                    <div className="flex items-center gap-3 text-sm">
+                        <Clock size={13} className="text-foreground-muted shrink-0" />
+                        <span className="text-foreground-muted text-xs">
+                            {item.duration_mins} min
+                            {item.prep_mins ? ` + ${item.prep_mins} min prep` : ""}
+                        </span>
+                    </div>
+                )}
+
+                <div className="flex items-center gap-3 text-sm">
+                    <Target size={13} className="text-foreground-muted shrink-0" />
+                    <div className="flex gap-1.5 flex-wrap">
+                        {item.goal_tags.map((tag) => (
+                            <span key={tag} className={`badge text-[10px] ${goalTagClass(tag)}`}>{tag}</span>
+                        ))}
+                    </div>
+                </div>
+            </div>
+
+            {/* Rationale */}
+            <div className="p-2.5 rounded-lg bg-white/[0.02] border border-border text-xs text-foreground-muted">
+                <span className="font-medium text-foreground">Why:</span>{" "}
+                {item.rationale}
+            </div>
+        </div>
+    );
 
     return (
         <div>
@@ -76,9 +149,9 @@ export default function CapturePage() {
                         <PenSquare size={20} className="text-accent" />
                     </div>
                     <div>
-                        <h1 className="text-2xl font-bold">Capture</h1>
+                        <h1 className="text-2xl font-bold">Smart Capture</h1>
                         <p className="text-foreground-muted text-sm">
-                            Paste anything — we&apos;ll extract the commitment
+                            Paste a task, describe a goal, or share what&apos;s on your mind — we&apos;ll figure it out
                         </p>
                     </div>
                 </div>
@@ -94,7 +167,7 @@ export default function CapturePage() {
                         <textarea
                             value={rawText}
                             onChange={(e) => setRawText(e.target.value)}
-                            placeholder="Paste an email snippet, type a task, or jot down a commitment..."
+                            placeholder="Type anything — a specific event, a high-level goal, or just what's on your mind..."
                             rows={6}
                             className="input-field resize-none mb-4 font-mono text-sm"
                         />
@@ -107,12 +180,12 @@ export default function CapturePage() {
                             {extracting ? (
                                 <>
                                     <Loader2 size={16} className="animate-spin" />
-                                    Extracting...
+                                    Analyzing...
                                 </>
                             ) : (
                                 <>
                                     <Sparkles size={16} />
-                                    Extract Commitment
+                                    Extract & Plan
                                 </>
                             )}
                         </button>
@@ -147,121 +220,60 @@ export default function CapturePage() {
 
                 {/* Preview Column */}
                 <div>
-                    {extracted ? (
-                        <div className="glass-card p-6 animate-fade-in">
-                            <div className="flex items-center justify-between mb-4">
-                                <h3 className="font-semibold text-sm">Extracted Commitment</h3>
-                                <span className={`badge ${method === "llm" ? "bg-success/15 text-success" : method === "llm_repair" ? "bg-warning/15 text-warning" : "bg-foreground-muted/15 text-foreground-muted"}`}>
-                                    {method === "llm" ? "✨ AI" : method === "llm_repair" ? "🔧 AI Repaired" : "📏 Fallback"}
+                    {result ? (
+                        <div className="space-y-4">
+                            {/* Classification badge */}
+                            <div className="flex items-center gap-3">
+                                <span className={`badge ${inputTypeLabel[result.input_type].color} flex items-center gap-1.5`}>
+                                    {inputTypeLabel[result.input_type].icon}
+                                    {inputTypeLabel[result.input_type].text}
                                 </span>
-                            </div>
-
-                            {/* Title */}
-                            <h2 className="text-lg font-bold mb-4">{extracted.title}</h2>
-
-                            {/* Meta rows */}
-                            <div className="space-y-3 mb-4">
-                                <div className="flex items-center gap-3 text-sm">
-                                    <Tag size={14} className="text-foreground-muted" />
-                                    <span className="text-foreground-muted">Type:</span>
-                                    <span className="badge bg-accent/15 text-accent">{extracted.type}</span>
-                                    <span className="badge bg-accent/15 text-accent">{extracted.required_action}</span>
-                                </div>
-
-                                {(extracted.start_at || extracted.due_at) && (
-                                    <div className="flex items-center gap-3 text-sm">
-                                        <Clock size={14} className="text-foreground-muted" />
-                                        <span className="text-foreground-muted">
-                                            {extracted.start_at
-                                                ? `Starts: ${new Date(extracted.start_at).toLocaleString()}`
-                                                : `Due: ${new Date(extracted.due_at!).toLocaleString()}`}
-                                        </span>
-                                    </div>
+                                {result.count > 1 && (
+                                    <span className="text-xs text-foreground-muted">
+                                        Decomposed into {result.count} tasks
+                                    </span>
                                 )}
-
-                                {extracted.duration_mins && (
-                                    <div className="flex items-center gap-3 text-sm">
-                                        <Clock size={14} className="text-foreground-muted" />
-                                        <span className="text-foreground-muted">Duration: {extracted.duration_mins} min</span>
-                                        {extracted.prep_mins ? (
-                                            <span className="text-foreground-muted">+ {extracted.prep_mins} min prep</span>
-                                        ) : null}
-                                    </div>
-                                )}
-
-                                <div className="flex items-center gap-3 text-sm">
-                                    <Target size={14} className="text-foreground-muted" />
-                                    <span className="text-foreground-muted">Goals:</span>
-                                    <div className="flex gap-1.5">
-                                        {extracted.goal_tags.map((tag) => (
-                                            <span key={tag} className={`badge ${goalTagClass(tag)}`}>{tag}</span>
-                                        ))}
-                                    </div>
-                                </div>
                             </div>
 
-                            {/* Confidence bar */}
-                            <div className="mb-4">
-                                <div className="flex justify-between text-xs text-foreground-muted mb-1">
-                                    <span>Confidence</span>
-                                    <span>{Math.round(extracted.confidence * 100)}%</span>
-                                </div>
-                                <div className="confidence-bar">
-                                    <div
-                                        className="confidence-fill"
-                                        style={{
-                                            width: `${extracted.confidence * 100}%`,
-                                            background:
-                                                extracted.confidence > 0.7
-                                                    ? "var(--success)"
-                                                    : extracted.confidence > 0.4
-                                                        ? "var(--warning)"
-                                                        : "var(--danger)",
-                                        }}
-                                    />
-                                </div>
-                            </div>
-
-                            {/* Strength */}
-                            <div className="flex items-center gap-2 text-sm mb-4">
-                                <span className="text-foreground-muted">Strength:</span>
-                                <span className={`badge ${extracted.commitment_strength === "confirmed" ? "bg-success/15 text-success" :
-                                        extracted.commitment_strength === "likely" ? "bg-accent/15 text-accent" :
-                                            extracted.commitment_strength === "soft" ? "bg-warning/15 text-warning" :
-                                                "bg-foreground-muted/15 text-foreground-muted"
-                                    }`}>
-                                    {extracted.commitment_strength}
-                                </span>
-                            </div>
-
-                            {/* Rationale */}
-                            <div className="p-3 rounded-xl bg-white/[0.02] border border-border text-xs text-foreground-muted">
-                                <span className="font-medium text-foreground">Rationale:</span>{" "}
-                                {extracted.rationale}
-                            </div>
-
-                            {/* Actions */}
-                            {saved && (
-                                <div className="mt-4 p-3 rounded-xl bg-success/10 border border-success/20 flex items-center gap-2 text-sm text-success">
-                                    <CheckCircle2 size={16} />
-                                    Saved to inbox
-                                    <button
-                                        onClick={() => router.push("/inbox")}
-                                        className="ml-auto flex items-center gap-1 text-success hover:underline"
-                                    >
-                                        Go to inbox <ArrowRight size={14} />
-                                    </button>
+                            {/* Classification reasoning */}
+                            {result.input_type !== "event" && (
+                                <div className="p-3 rounded-xl bg-accent/5 border border-accent/10 text-xs text-foreground-muted">
+                                    <span className="font-medium text-accent">🧠 Classification:</span>{" "}
+                                    {result.classification_reasoning}
                                 </div>
                             )}
+
+                            {/* Commitment cards */}
+                            {result.candidates.map((c, i) =>
+                                renderCommitmentCard(
+                                    c.extracted_json,
+                                    c.extraction_method,
+                                    i,
+                                    result.candidates.length
+                                )
+                            )}
+
+                            {/* Success message */}
+                            <div className="p-3 rounded-xl bg-success/10 border border-success/20 flex items-center gap-2 text-sm text-success">
+                                <CheckCircle2 size={16} />
+                                {result.count > 1
+                                    ? `${result.count} tasks saved to inbox`
+                                    : "Saved to inbox"}
+                                <button
+                                    onClick={() => router.push("/inbox")}
+                                    className="ml-auto flex items-center gap-1 text-success hover:underline"
+                                >
+                                    Go to inbox <ArrowRight size={14} />
+                                </button>
+                            </div>
 
                             {/* Capture another */}
                             <button
                                 onClick={() => {
                                     setRawText("");
-                                    setExtracted(null);
-                                    setSaved(false);
+                                    setResult(null);
                                 }}
-                                className="btn-secondary w-full justify-center mt-3"
+                                className="btn-secondary w-full justify-center"
                             >
                                 Capture another
                             </button>
@@ -270,8 +282,8 @@ export default function CapturePage() {
                         <div className="glass-card p-6 flex flex-col items-center justify-center min-h-[300px] text-center opacity-50">
                             <Sparkles size={32} className="text-foreground-muted mb-3" />
                             <p className="text-foreground-muted text-sm">
-                                Paste text on the left and hit Extract.<br />
-                                We&apos;ll parse it into a structured commitment.
+                                Type or paste anything on the left.<br />
+                                Events get parsed. Goals get decomposed into tasks.
                             </p>
                         </div>
                     )}

@@ -49,21 +49,30 @@ export async function POST(request: Request) {
             calendarEvents = [];
         }
 
-        // Generate plan
-        const { blocks, warnings } = generatePlan({
+        // Generate two plan options
+        const planA = generatePlan({
             fixedEvents: calendarEvents,
             commitments: (commitments || []) as Commitment[],
             preferences: preferences as Preferences,
             weekStart,
+            variation: "A",
         });
 
-        // Save plan to DB
+        const planB = generatePlan({
+            fixedEvents: calendarEvents,
+            commitments: (commitments || []) as Commitment[],
+            preferences: preferences as Preferences,
+            weekStart,
+            variation: "B",
+        });
+
+        // Save plan A as the default draft for now (to maintain compatibility if needed)
         const { data: plan, error: saveError } = await supabase
             .from("plans")
             .insert({
                 user_id: user.id,
                 week_start: weekStart.toISOString().split("T")[0],
-                plan_json: blocks,
+                plan_json: planA.blocks,
                 status: "DRAFT",
             })
             .select()
@@ -79,7 +88,11 @@ export async function POST(request: Request) {
 
         return NextResponse.json({
             plan,
-            warnings,
+            options: {
+                A: planA.blocks,
+                B: planB.blocks,
+            },
+            warnings: planA.warnings, // Using A's warnings for simplicity
             demo_mode: useDemoEvents,
         });
     } catch (err) {

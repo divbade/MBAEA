@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { extractCommitment } from "@/lib/extraction";
+import { classifyAndExtract } from "@/lib/extraction";
 
 export async function POST(request: Request) {
     try {
@@ -22,33 +22,47 @@ export async function POST(request: Request) {
             );
         }
 
-        // Extract commitment using LLM
-        const { data: extracted, method } = await extractCommitment(
+        // Smart capture: classify + extract/decompose
+        const result = await classifyAndExtract(
             raw_text.trim(),
             new Date().toISOString()
         );
 
-        // Store candidate item
-        const { data: candidate, error } = await supabase
-            .from("candidate_items")
-            .insert({
-                user_id: user.id,
-                source: "MANUAL",
-                raw_text: raw_text.trim(),
-                extracted_json: extracted,
-                status: "NEW",
-            })
-            .select()
-            .single();
+        // Store all candidate items
+        const candidates = [];
+        for (const item of result.items) {
+            const { data: candidate, error } = await supabase
+                .from("candidate_items")
+                .insert({
+                    user_id: user.id,
+                    source: "MANUAL",
+                    raw_text: raw_text.trim(),
+                    extracted_json: item.data,
+                    status: "NEW",
+                })
+                .select()
+                .single();
 
-        if (error) {
-            console.error("DB insert error:", error);
+            if (error) {
+                console.error("DB insert error:", error);
+                continue;
+            }
+
+            candidates.push({
+                ...candidate,
+                extraction_method: item.method,
+            });
+        }
+
+        if (candidates.length === 0) {
             return NextResponse.json({ error: "Failed to save" }, { status: 500 });
         }
 
         return NextResponse.json({
-            candidate,
-            extraction_method: method,
+            candidates,
+            input_type: result.input_type,
+            classification_reasoning: result.classification_reasoning,
+            count: candidates.length,
         });
     } catch (err) {
         console.error("Capture error:", err);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
     CalendarDays,
     Sparkles,
@@ -26,14 +26,40 @@ const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
 
 export default function PlannerPage() {
     const [plan, setPlan] = useState<PlanBlock[] | null>(null);
+    const [options, setOptions] = useState<{ A: PlanBlock[]; B: PlanBlock[] } | null>(null);
     const [warnings, setWarnings] = useState<string[]>([]);
     const [loading, setLoading] = useState(false);
+    const [initialLoading, setInitialLoading] = useState(true);
     const [selectedBlock, setSelectedBlock] = useState<PlanBlock | null>(null);
-    const [feedback, setFeedback] = useState<Record<number, number>>({});
     const [demoMode, setDemoMode] = useState(true);
+    const [toast, setToast] = useState<{ message: string; type: "up" | "down" | "info" } | null>(null);
+    const [selectedOption, setSelectedOption] = useState<"A" | "B" | null>(null);
+
+    // Load the latest saved plan on mount
+    useEffect(() => {
+        const loadSavedPlan = async () => {
+            try {
+                const res = await fetch("/api/planner");
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.plan?.plan_json) {
+                        setPlan(data.plan.plan_json);
+                    }
+                }
+            } catch (err) {
+                console.error("Failed to load saved plan:", err);
+            } finally {
+                setInitialLoading(false);
+            }
+        };
+        loadSavedPlan();
+    }, []);
 
     const generatePlan = async () => {
         setLoading(true);
+        setOptions(null);
+        setPlan(null);
+        setSelectedOption(null);
         try {
             const res = await fetch("/api/planner", {
                 method: "POST",
@@ -47,9 +73,12 @@ export default function PlannerPage() {
             }
 
             const data = await res.json();
-            setPlan(data.plan.plan_json);
+            if (data.options) {
+                setOptions(data.options);
+            } else {
+                setPlan(data.plan.plan_json);
+            }
             setWarnings(data.warnings || []);
-            setFeedback({});
         } catch (err) {
             console.error("Plan generation error:", err);
         } finally {
@@ -57,27 +86,41 @@ export default function PlannerPage() {
         }
     };
 
-    const handleFeedback = async (blockIndex: number, thumbs: number) => {
-        setFeedback((prev) => ({ ...prev, [blockIndex]: thumbs }));
+    const selectPlan = async (option: "A" | "B") => {
+        if (!options) return;
+        setSelectedOption(option);
+        const winner = options[option];
+        const loser = options[option === "A" ? "B" : "A"];
 
+        // Extract all goal tags to send to feedback
+        const winnerTags = Array.from(new Set(winner.flatMap(b => b.goal_tags || [])));
+        const loserTags = Array.from(new Set(loser.flatMap(b => b.goal_tags || [])));
+
+        setPlan(winner);
+        
         try {
-            await fetch("/api/feedback", {
+            const res = await fetch("/api/feedback", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    item_type: "PLAN_BLOCK",
-                    ref_id: plan?.[blockIndex]?.commitment_id || "focus-block",
-                    thumbs,
-                    goal_tags: plan?.[blockIndex]?.goal_tags || [],
+                    item_type: "PLAN_COMPARISON",
+                    winner_tags: winnerTags,
+                    loser_tags: loserTags,
                 }),
             });
+
+            if (res.ok) {
+                const data = await res.json();
+                setToast({ message: data.message, type: "info" });
+                setTimeout(() => setToast(null), 4000);
+            }
         } catch (err) {
             console.error("Feedback error:", err);
         }
     };
 
     // Group blocks by day
-    const blocksByDay = (plan || []).reduce(
+    const getBlocksByDay = (blocks: PlanBlock[]) => blocks.reduce(
         (acc, block) => {
             const day = format(parseISO(block.start), "EEEE");
             if (!acc[day]) acc[day] = [];
@@ -89,8 +132,63 @@ export default function PlannerPage() {
 
     const monday = startOfWeek(new Date(), { weekStartsOn: 1 });
 
+    const ScheduleView = ({ blocks, title, onSelect, isSelected }: { blocks: PlanBlock[], title?: string, onSelect?: () => void, isSelected?: boolean }) => {
+        const dayBlocks = getBlocksByDay(blocks);
+        return (
+            <div className={`flex flex-col gap-4 transition-all duration-300 ${onSelect ? 'cursor-pointer' : ''} ${isSelected ? 'ring-2 ring-accent' : ''}`} onClick={onSelect}>
+                {title && (
+                    <div className="flex items-center justify-between px-2">
+                        <h2 className="text-lg font-bold flex items-center gap-2">
+                            {title}
+                            {isSelected && <Sparkles size={16} className="text-accent animate-pulse" />}
+                        </h2>
+                        {onSelect && !isSelected && (
+                            <button className="text-xs font-medium text-accent hover:underline">Choose this one</button>
+                        )}
+                    </div>
+                )}
+                <div className="grid gap-3">
+                    {DAYS.map((day, dayIndex) => {
+                        const dayDate = addDays(monday, dayIndex);
+                        const currentDayBlocks = dayBlocks[day] || [];
+                        if (currentDayBlocks.length === 0) return null;
+
+                        return (
+                            <div key={day} className="glass-card p-4">
+                                <div className="flex items-center justify-between mb-2">
+                                    <div className="flex items-center gap-2">
+                                        <h3 className="font-semibold text-xs">{day}</h3>
+                                        <span className="text-[10px] text-foreground-muted">
+                                            {format(dayDate, "MMM d")}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-1.5">
+                                    {currentDayBlocks.map((block, blockIdx) => {
+                                        const colors = BLOCK_COLORS[block.block_type] || BLOCK_COLORS.task;
+                                        return (
+                                            <div key={blockIdx} className="p-2 rounded-lg border border-border/50 text-[11px]" style={{ background: colors.bg }}>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-mono opacity-70" style={{ color: colors.text }}>
+                                                        {format(parseISO(block.start), "h:mm")}
+                                                    </span>
+                                                    <span className="font-medium truncate">{block.title}</span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        );
+    };
+
     return (
-        <div>
+        <div className="max-w-6xl mx-auto">
             {/* Header */}
             <div className="flex items-center justify-between mb-8">
                 <div className="flex items-center gap-3">
@@ -128,7 +226,7 @@ export default function PlannerPage() {
             </div>
 
             {/* Warnings */}
-            {warnings.length > 0 && (
+            {warnings.length > 0 && !options && (
                 <div className="mb-6 space-y-2">
                     {warnings.map((w, i) => (
                         <div key={i} className="p-3 rounded-xl bg-warning/10 border border-warning/20 text-sm text-warning flex items-center gap-2">
@@ -139,21 +237,40 @@ export default function PlannerPage() {
                 </div>
             )}
 
-            {!plan ? (
-                <div className="glass-card p-12 text-center">
-                    <CalendarDays size={40} className="text-foreground-muted mx-auto mb-4 opacity-30" />
-                    <p className="text-foreground-muted mb-2">No plan generated yet.</p>
-                    <p className="text-foreground-muted text-sm">
-                        Accept some items in your{" "}
-                        <a href="/inbox" className="text-accent hover:underline">Inbox</a>{" "}
-                        first, then click Generate Plan.
-                    </p>
+            {!plan && !options ? (
+                initialLoading ? (
+                    <div className="glass-card p-12 text-center">
+                        <Loader2 size={40} className="text-foreground-muted mx-auto mb-4 animate-spin opacity-30" />
+                        <p className="text-foreground-muted text-sm">Loading your plan...</p>
+                    </div>
+                ) : (
+                    <div className="glass-card p-12 text-center">
+                        <CalendarDays size={40} className="text-foreground-muted mx-auto mb-4 opacity-30" />
+                        <p className="text-foreground-muted mb-2">No plan generated yet.</p>
+                        <p className="text-foreground-muted text-sm">
+                            Accept some items in your{" "}
+                            <a href="/inbox" className="text-accent hover:underline">Inbox</a>{" "}
+                            first, then click Generate Plan.
+                        </p>
+                    </div>
+                )
+            ) : options && !selectedOption ? (
+                <div className="space-y-6 animate-fade-in">
+                    <div className="text-center bg-accent/10 border border-accent/20 p-4 rounded-2xl">
+                        <h2 className="text-lg font-semibold mb-1">Choose your preference</h2>
+                        <p className="text-sm text-foreground-muted">I've generated two different approaches based on your goals. Which one feels better?</p>
+                    </div>
+                    <div className="grid md:grid-cols-2 gap-8 items-start">
+                        <ScheduleView blocks={options.A} title="Option A" onSelect={() => selectPlan("A")} />
+                        <ScheduleView blocks={options.B} title="Option B" onSelect={() => selectPlan("B")} />
+                    </div>
                 </div>
             ) : (
-                <div className="grid gap-4">
+                <div className="grid gap-4 animate-fade-in">
                     {DAYS.map((day, dayIndex) => {
                         const dayDate = addDays(monday, dayIndex);
-                        const dayBlocks = blocksByDay[day] || [];
+                        const currentBlocksByDay = getBlocksByDay(plan || []);
+                        const dayBlocks = currentBlocksByDay[day] || [];
 
                         return (
                             <div key={day} className="glass-card p-5">
@@ -176,7 +293,6 @@ export default function PlannerPage() {
                                 ) : (
                                     <div className="space-y-2">
                                         {dayBlocks.map((block, blockIdx) => {
-                                            const globalIdx = plan.indexOf(block);
                                             const colors = BLOCK_COLORS[block.block_type] || BLOCK_COLORS.task;
                                             const isSelected = selectedBlock === block;
 
@@ -208,30 +324,6 @@ export default function PlannerPage() {
                                                                     <span key={tag} className={`badge tag-${tag}`}>{tag}</span>
                                                                 ))}
                                                             </div>
-
-                                                            {/* Feedback buttons */}
-                                                            {block.block_type !== "fixed_event" && (
-                                                                <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                                                                    <button
-                                                                        className={`p-1.5 rounded-lg transition-all ${feedback[globalIdx] === 1
-                                                                                ? "bg-success/20 text-success"
-                                                                                : "text-foreground-muted hover:text-success hover:bg-success/10"
-                                                                            }`}
-                                                                        onClick={() => handleFeedback(globalIdx, 1)}
-                                                                    >
-                                                                        <ThumbsUp size={14} />
-                                                                    </button>
-                                                                    <button
-                                                                        className={`p-1.5 rounded-lg transition-all ${feedback[globalIdx] === -1
-                                                                                ? "bg-danger/20 text-danger"
-                                                                                : "text-foreground-muted hover:text-danger hover:bg-danger/10"
-                                                                            }`}
-                                                                        onClick={() => handleFeedback(globalIdx, -1)}
-                                                                    >
-                                                                        <ThumbsDown size={14} />
-                                                                    </button>
-                                                                </div>
-                                                            )}
                                                         </div>
                                                     </div>
 
@@ -267,6 +359,17 @@ export default function PlannerPage() {
                             </div>
                         ))}
                     </div>
+                </div>
+            )}
+
+            {/* Feedback toast */}
+            {toast && (
+                <div className={`fixed bottom-6 right-6 px-4 py-3 rounded-xl text-sm font-medium shadow-lg animate-fade-in z-50 flex items-center gap-2 ${
+                        toast.type === "info" ? "bg-accent/20 text-accent border border-accent/30" :
+                        toast.type === "up" ? "bg-success/20 text-success border border-success/30" :
+                        "bg-warning/20 text-warning border border-warning/30"
+                    }`} style={{ backdropFilter: 'blur(12px)' }}>
+                    {toast.type === "info" ? "✨" : toast.type === "up" ? "👍" : "👎"} {toast.message}
                 </div>
             )}
         </div>

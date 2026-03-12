@@ -1,4 +1,5 @@
 import { addDays, addMinutes, format, isAfter, isBefore, parseISO, startOfWeek, setHours, setMinutes } from "date-fns";
+import { toZonedTime, fromZonedTime } from "date-fns-tz";
 import type { Commitment, PlanBlock, Preferences, CalendarEvent } from "@/lib/types";
 
 interface PlannerInput {
@@ -6,6 +7,7 @@ interface PlannerInput {
     commitments: Commitment[];
     preferences: Preferences;
     weekStart: Date;
+    variation?: "A" | "B";
 }
 
 interface TimeSlot {
@@ -28,13 +30,16 @@ function getAvailableSlots(
     day: Date,
     workStart: string,
     workEnd: string,
-    occupied: TimeSlot[]
+    occupied: TimeSlot[],
+    timezone: string = "UTC"
 ): TimeSlot[] {
     const start = parseWorkTime(workStart);
     const end = parseWorkTime(workEnd);
 
-    const dayStart = setMinutes(setHours(day, start.hours), start.minutes);
-    const dayEnd = setMinutes(setHours(day, end.hours), end.minutes);
+    // Ensure day is at the start of the day in the user's timezone
+    const zonedDay = toZonedTime(day, timezone);
+    const dayStart = fromZonedTime(setMinutes(setHours(zonedDay, start.hours), start.minutes), timezone);
+    const dayEnd = fromZonedTime(setMinutes(setHours(zonedDay, end.hours), end.minutes), timezone);
 
     // Sort occupied by start time
     const sortedOccupied = [...occupied]
@@ -95,7 +100,8 @@ export function generatePlan(input: PlannerInput): {
     blocks: PlanBlock[];
     warnings: string[];
 } {
-    const { fixedEvents, commitments, preferences, weekStart } = input;
+    const { fixedEvents, commitments, preferences, weekStart, variation = "A" } = input;
+    const { timezone = "UTC" } = preferences;
     const blocks: PlanBlock[] = [];
     const warnings: string[] = [];
     const monday = startOfWeek(weekStart, { weekStartsOn: 1 });
@@ -151,7 +157,11 @@ export function generatePlan(input: PlannerInput): {
         // Then by start time
         const aStart = a.start_at ? parseISO(a.start_at).getTime() : Infinity;
         const bStart = b.start_at ? parseISO(b.start_at).getTime() : Infinity;
-        return aStart - bStart;
+        if (aStart !== bStart) return aStart - bStart;
+
+        // Variation: if everything else is equal, flip based on variation
+        if (variation === "B") return b.title.localeCompare(a.title);
+        return a.title.localeCompare(b.title);
     });
 
     // Track commitments per day for overload check
@@ -201,7 +211,8 @@ export function generatePlan(input: PlannerInput): {
                         addDays(monday, dayIndex),
                         preferences.work_start,
                         preferences.work_end,
-                        occupied
+                        occupied,
+                        timezone
                     );
 
                     // Check if prep slot is available
@@ -255,12 +266,12 @@ export function generatePlan(input: PlannerInput): {
             const dayCount = commitmentsPerDay.get(d) || 0;
             if (dayCount >= preferences.max_commitments_per_day) continue;
 
-            const occupied = occupiedByDay.get(d) || [];
             const available = getAvailableSlots(
                 dayDate,
                 preferences.work_start,
                 preferences.work_end,
-                occupied
+                occupied,
+                timezone
             );
 
             const slot = findSlot(available, duration);
@@ -306,7 +317,8 @@ export function generatePlan(input: PlannerInput): {
             dayDate,
             preferences.work_start,
             format(morningEnd, "HH:mm"),
-            occupied
+            occupied,
+            timezone
         );
 
         // Try to place up to 2 focus blocks
