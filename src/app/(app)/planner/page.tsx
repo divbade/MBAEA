@@ -120,6 +120,7 @@ export default function PlannerPage() {
 
         // Also update the plan in the database to persist this choice
         if (planId) {
+            console.log("Persisting selection for planId:", planId);
             try {
                 await fetch("/api/planner", {
                     method: "PATCH",
@@ -129,6 +130,8 @@ export default function PlannerPage() {
             } catch (err) {
                 console.error("Failed to persist selection:", err);
             }
+        } else {
+            console.warn("No planId available to persist selection.");
         }
     };
 

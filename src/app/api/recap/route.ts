@@ -20,9 +20,9 @@ export async function GET() {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        // 1. Get latest plan from weekly_plans (matching Planner API)
+        // 1. Get latest plan from plans (matching Planner API)
         const { data: plan } = await supabase
-            .from("weekly_plans")
+            .from("plans")
             .select("*")
             .eq("user_id", user.id)
             .order("created_at", { ascending: false })
