@@ -77,12 +77,12 @@ export async function POST(request: Request) {
 
         // 5. Save default plan (A) to DB
         const { error: saveError } = await supabase
-            .from("weekly_plans")
+            .from("plans")
             .insert({
                 user_id: user.id,
                 week_start: weekStart.toISOString().split("T")[0],
                 plan_json: planA.blocks,
-                status: "draft",
+                status: "DRAFT",
             });
 
         if (saveError) {
@@ -115,7 +115,7 @@ export async function GET() {
         }
 
         const { data: plan } = await supabase
-            .from("weekly_plans")
+            .from("plans")
             .select("*")
             .eq("user_id", user.id)
             .order("created_at", { ascending: false })
